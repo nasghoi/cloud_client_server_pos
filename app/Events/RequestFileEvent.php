@@ -12,9 +12,9 @@ class RequestFileEvent implements ShouldBroadcastNow
 {
     use Dispatchable, InteractsWithSockets, SerializesModels;
 
-    public $clientId;
+    public string $clientId;
 
-    public function __construct($clientId)
+    public function __construct(string $clientId)
     {
         $this->clientId = $clientId;
     }
@@ -31,6 +31,6 @@ class RequestFileEvent implements ShouldBroadcastNow
 
     public function broadcastAs(): string
     {
-        return 'request.file';
+        return 'TriggerUploadEvent';
     }
 }
