@@ -19,25 +19,31 @@ Route::get('/trigger/{clientId}', function ($clientId) {
 
 // 2. Handle the incoming heavy data stream via HTTP POST
 Route::post('/upload/{clientId}', function (Request $request, $clientId) {
-    // Matches your local testing file requirement target name
     $filename = "downloads/{$clientId}_100mbfile.txt";
+    $disk = Storage::disk('local');
+    $disk->makeDirectory(dirname($filename));
 
-    // Open the raw stream from the incoming request body
-    $inputStream = fopen('php://input', 'r');
+    $inputStream = fopen('php://input', 'rb');
     if (!$inputStream) {
         return response()->json([
             'status' => 'error',
-            'message' => 'Cannot read input stream'
+            'message' => 'Cannot read incoming file stream'
         ], 400);
     }
 
-    // Stream directly to the storage/app folder chunk-by-chunk
-    Storage::disk('local')->put($filename, $inputStream);
+    $success = $disk->writeStream($filename, $inputStream);
     fclose($inputStream);
+
+    if ($success === false) {
+        return response()->json([
+            'status' => 'error',
+            'message' => 'Failed to save uploaded file'
+        ], 500);
+    }
 
     return response()->json([
         'status' => 'success',
-        'message' => 'File successfully streamed into client storage',
+        'message' => 'File successfully received and saved',
         'path' => $filename
     ]);
 });
