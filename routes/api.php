@@ -17,6 +17,16 @@ Route::get('/trigger/{clientId}', function ($clientId) {
     ]);
 });
 
+// 1a. Acknowledge the event was received by the client
+Route::post('/ack/{clientId}', function (Request $request, $clientId) {
+    return response()->json([
+        'status' => 'success',
+        'message' => 'Client acknowledgement received',
+        'clientId' => $clientId,
+        'payload' => $request->all()
+    ]);
+});
+
 // 2. Handle the incoming heavy data stream via HTTP POST
 Route::post('/upload/{clientId}', function (Request $request, $clientId) {
     $filename = "downloads/{$clientId}_100mbfile.txt";

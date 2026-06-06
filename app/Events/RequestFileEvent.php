@@ -31,6 +31,6 @@ class RequestFileEvent implements ShouldBroadcastNow
 
     public function broadcastAs(): string
     {
-        return 'TriggerUploadEvent';
+        return 'request.file';
     }
 }
