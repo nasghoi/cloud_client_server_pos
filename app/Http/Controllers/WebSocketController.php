@@ -106,10 +106,10 @@ class WebSocketController extends Controller
      */
     public function handleUpload(Request $request, string $clientId)
     {
-        $chunkNumber = (int)$request->input('chunkNumber', 0);
-        $totalChunks = (int)$request->input('totalChunks', 0);
-        $chunkSize = (int)$request->input('chunkSize', 0);
-        $uploadId = $request->input('uploadId');
+        $chunkNumber = (int)$request->input('chunkNumber', $request->header('X-Chunk-Number', 0));
+        $totalChunks = (int)$request->input('totalChunks', $request->header('X-Total-Chunks', 0));
+        $chunkSize = (int)$request->input('chunkSize', $request->header('X-Chunk-Size', 0));
+        $uploadId = $request->input('uploadId', $request->header('X-Upload-Id'));
 
         // Validate required parameters
         if (!$uploadId || $chunkNumber < 0 || $totalChunks <= 0) {
@@ -130,35 +130,41 @@ class WebSocketController extends Controller
             }
 
             // Read and save the chunk
-            $inputStream = fopen('php://input', 'rb');
-            if (!$inputStream) {
-                return response()->json([
-                    'status' => 'error',
-                    'message' => 'Cannot read incoming file stream'
-                ], 400);
-            }
-
             $chunkPath = "{$tempDir}/chunk_{$chunkNumber}";
-            $chunkFile = fopen($chunkPath, 'wb');
-            if (!$chunkFile) {
+
+            if ($request->hasFile('file')) {
+                $uploadedFile = $request->file('file');
+                $uploadedFile->move($tempDir, "chunk_{$chunkNumber}");
+            } else {
+                $inputStream = fopen('php://input', 'rb');
+                if (!$inputStream) {
+                    return response()->json([
+                        'status' => 'error',
+                        'message' => 'Cannot read incoming file stream'
+                    ], 400);
+                }
+
+                $chunkFile = fopen($chunkPath, 'wb');
+                if (!$chunkFile) {
+                    fclose($inputStream);
+                    return response()->json([
+                        'status' => 'error',
+                        'message' => 'Cannot write chunk file'
+                    ], 500);
+                }
+
+                // Stream chunk to disk (memory-efficient)
+                $written = stream_copy_to_stream($inputStream, $chunkFile);
                 fclose($inputStream);
-                return response()->json([
-                    'status' => 'error',
-                    'message' => 'Cannot write chunk file'
-                ], 500);
-            }
+                fclose($chunkFile);
 
-            // Stream chunk to disk (memory-efficient)
-            $written = stream_copy_to_stream($inputStream, $chunkFile);
-            fclose($inputStream);
-            fclose($chunkFile);
-
-            if ($written === 0 && $chunkSize > 0) {
-                @unlink($chunkPath);
-                return response()->json([
-                    'status' => 'error',
-                    'message' => 'Failed to write chunk data'
-                ], 500);
+                if ($written === 0 && $chunkSize > 0) {
+                    @unlink($chunkPath);
+                    return response()->json([
+                        'status' => 'error',
+                        'message' => 'Failed to write chunk data'
+                    ], 500);
+                }
             }
 
             // Check if all chunks are received

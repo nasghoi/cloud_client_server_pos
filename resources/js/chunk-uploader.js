@@ -4,7 +4,7 @@
  */
 class ChunkedFileUploader {
   constructor(config = {}) {
-    this.chunkSize = config.chunkSize || 5 * 1024 * 1024; // 5MB default
+    this.chunkSize = config.chunkSize || 1 * 1024 * 1024; // 1MB default
     this.maxRetries = config.maxRetries || 3;
     this.timeout = config.timeout || 30000; // 30 seconds per chunk
     this.uploadId = config.uploadId || this.generateUploadId();
@@ -121,13 +121,6 @@ class ChunkedFileUploader {
    * Upload a single chunk
    */
   async uploadChunk(chunk, chunkNumber, totalChunks, clientId, uploadId) {
-    const formData = new FormData();
-    formData.append('chunkNumber', chunkNumber);
-    formData.append('totalChunks', totalChunks);
-    formData.append('chunkSize', chunk.size);
-    formData.append('uploadId', uploadId);
-    formData.append('file', chunk);
-
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), this.timeout);
 
@@ -136,10 +129,15 @@ class ChunkedFileUploader {
         `${this.baseUrl}/upload/${clientId}`,
         {
           method: 'POST',
-          body: formData,
+          body: chunk,
           signal: controller.signal,
           headers: {
-            'Accept': 'application/json'
+            'Accept': 'application/json',
+            'X-Upload-Id': uploadId,
+            'X-Chunk-Number': chunkNumber,
+            'X-Total-Chunks': totalChunks,
+            'X-Chunk-Size': chunk.size,
+            'Content-Type': 'application/octet-stream'
           }
         }
       );
