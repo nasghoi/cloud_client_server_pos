@@ -1,273 +1,230 @@
-# Cloud Server — On-Demand File Download from On-Premise Clients
+# Cloud File Download — On-Premise Client → Cloud Server
 
-## Overview
+A solution for downloading files from restaurant clients (behind NAT/firewall) to a cloud server, using **Laravel Reverb** (WebSocket) as the signal channel and **HTTP POST** for the actual file stream.
 
-This solution enables a **cloud-hosted Laravel server** to download a large file (≈100 MB) from any **on-premise restaurant client** on demand, even when those clients sit behind a private NAT/firewall with no inbound ports open.
-
-The core design challenge is that the cloud server cannot reach the client directly — but the client *can* reach the cloud server. This solution exploits that asymmetry:
-
-1. The client keeps a **persistent outbound WebSocket connection** (via Laravel Reverb) open at all times.
-2. The cloud server uses that pipe to **signal** the client when it wants the file.
-3. The client reacts by **streaming the file back** over a regular outbound HTTP POST.
+> **Live demo:** https://cloud.nasrm.com — the cloud server is already running. You only need to run the client side yourself.
 
 ---
 
-## Architecture
+## How it works
 
 ```
-┌──────────────────────────────────────────────────────┐
-│  ON-PREMISE CLIENT  (Private Network / Behind NAT)   │
-│                                                      │
-│  node client.js                                      │
-│    ├── Pusher-JS  ──── persistent WSS ──────────────►│
-│    └── Axios      ──── outbound HTTP POST ──────────►│
-└──────────────────────────────────────────────────────┘
-                                  │  (all traffic is OUTBOUND)
-                                  ▼
-┌──────────────────────────────────────────────────────┐
-│  CLOUD SERVER  (Publicly Accessible)                 │
-│                                                      │
-│  Laravel 13 + Laravel Reverb (WebSocket server)      │
-│                                                      │
-│  API Endpoints:                                      │
-│    GET  /api/check/{clientId}   ← connection status  │
-│    GET  /api/trigger/{clientId} ← broadcast signal   │
-│    POST /api/ack/{clientId}     ← client ack         │
-│    POST /api/upload/{clientId}  ← file stream        │
-│                                                      │
-│  Web UI:                                             │
-│    GET  /            ← Control Panel                 │
-│    GET  /downloads   ← Downloaded files list         │
-└──────────────────────────────────────────────────────┘
+Client (restaurant)                    Cloud Server
+     │                                      │
+     │── persistent WebSocket (outbound) ──►│
+     │                                      │
+     │        Admin triggers /api/trigger   │
+     │◄─────── "request.file" event ────────│
+     │                                      │
+     │─── POST /api/ack/{id}  ────────────► │  (acknowledgement)
+     │─── POST /api/upload/{id} ──────────► │  (streams the file)
+     │                                      │
 ```
 
-### Step-by-step flow
+### Why we use each API
 
-| Step | Actor | Action |
-|------|-------|--------|
-| 0 | Client | Starts `node client.js`. Establishes persistent WSS connection to Reverb and subscribes to `restaurant.{RESTAURANT_ID}` channel. |
-| 1 | Admin | Calls `GET /api/trigger/{clientId}` (via UI or curl). |
-| 2 | Cloud Server | Checks if channel is occupied (client online). If offline → returns `404`. If online → broadcasts `request.file` event. |
-| 3 | Client | Receives the WebSocket event. POSTs an acknowledgement to `POST /api/ack/{clientId}`. |
-| 4 | Client | Opens a read stream of `$HOME/file_to_download.txt` and POSTs the binary stream to `POST /api/upload/{clientId}`. |
-| 5 | Cloud Server | Receives the stream, writes it chunk-by-chunk to `storage/app/private/downloads/{clientId}_100mbfile.txt`. |
+- **`GET /api/check/{id}`** — Checks if the client is currently online.
+- **`GET /api/trigger/{id}`** — Sends a WebSocket signal to the client to start uploading.
+- **`POST /api/ack/{id}`** — Client confirms it received the signal and is ready.
+- **`POST /api/upload/{id}`** — Client streams the file to the server using HTTP POST (efficient).
 
 ---
 
-## Repository Structure
+## Client Setup (restaurant-pos)
 
-```
-cloud_server_nasr/          ← Laravel Cloud Server
-├── app/
-│   ├── Events/
-│   │   └── RequestFileEvent.php     ← WebSocket broadcast event
-│   └── Http/Controllers/
-│       └── WebSocketController.php  ← All API logic
-├── routes/
-│   ├── api.php                      ← API routes
-│   └── web.php                      ← Web UI routes
-└── resources/views/
-    ├── welcome.blade.php            ← Control panel UI
-    └── downloads.blade.php          ← Downloads list UI
+> The cloud server is already live at `cloud.nasrm.com`. Just run the client.
 
-restaurant-pos/             ← On-Premise Client (Node.js)
-├── client.js               ← Daemon: WebSocket listener + file streamer
-├── .env                    ← Client configuration
-└── package.json
-```
-
----
-
-## Prerequisites
-
-### Cloud Server
-- PHP 8.3+
-- Composer
-- Laravel 13
-- Laravel Reverb (`laravel/reverb`)
-
-### Client (On-Premise)
-- Node.js 18+
-- npm
-- The file to download at: `$HOME/file_to_download.txt`
-
----
-
-## Setup
-
-### 1. Cloud Server
-
-**Clone and install:**
-```bash
-git clone <repository-url> cloud_server_nasr
-cd cloud_server_nasr
-composer install
-cp .env.example .env
-php artisan key:generate
-```
-
-**Configure `.env`:**
-```env
-BROADCAST_CONNECTION=reverb
-
-REVERB_APP_ID=your_app_id
-REVERB_APP_KEY=your_app_key
-REVERB_APP_SECRET=your_app_secret
-REVERB_HOST=localhost
-REVERB_PORT=8080
-REVERB_SCHEME=http
-```
-
-**Start the servers** (3 separate terminals):
+**1. Install dependencies**
 
 ```bash
-# Terminal 1 — Laravel HTTP server
-php artisan serve --port=8000
-
-# Terminal 2 — Laravel Reverb WebSocket server
-php artisan reverb:start --host=127.0.0.1 --port=8080
-
-# (Optional) Terminal 3 — Queue worker (not required; ShouldBroadcastNow is used)
-# php artisan queue:listen
-```
-
----
-
-### 2. On-Premise Client
-
-**Install dependencies:**
-```bash
-cd restaurant-pos
 npm install
 ```
 
-**Configure `.env`:**
-```env
-REVERB_APP_KEY=your_app_key      # Must match the cloud server
-REVERB_HOST=your.cloud.domain    # WebSocket server hostname
-REVERB_PORT=443                  # 443 for WSS (production), 8080 for local
-REVERB_SCHEME=https              # https for production, http for local
+**2. Configure `.env`**
 
-RESTAURANT_ID=rest02             # Unique ID for this client
-CLOUD_API_URL=https://your.cloud.domain/api
+```env
+# change app key, host and api url if you use your own server
+REVERB_APP_KEY=i0jxwytt7ajazg1zy8yw
+REVERB_HOST="ws.nasrm.com"
+CLOUD_API_URL="https://cloud.nasrm.com/api"
+
+# based on the restaurant id
+RESTAURANT_ID=restaurant02
 ```
 
-**Start the daemon:**
+**3. Place the file to be downloaded**
+
+Make sure this file exists on the client machine:
+
+```
+$HOME/file_to_download.txt
+```
+
+**4. Start the daemon**
+
 ```bash
 node client.js
 ```
 
-You should see:
+Expected output:
+
 ```
 Starting client daemon...
-Listening on channel: restaurant.rest02
+Listening on channel: restaurant.restaurant02
 WebSocket connection established.
 ```
 
-The client is now online and waiting for signals.
+The client is now online and waiting for a signal from the cloud.
 
 ---
 
-## Triggering a Download
+## Client Code (`client.js`)
 
-### Option A — Web UI (Recommended)
+```js
+import { Pusher } from "pusher-js";
+import axios from "axios";
+import fs from "fs";
+import path from "path";
+import os from "os";
+import dotenv from "dotenv";
 
-Open `http://your-server/` in a browser.
+dotenv.config();
 
-1. Enter the **Restaurant ID** (e.g. `rest02`).
-2. Click **Check Connection** to verify the client is online.
-3. Click **Trigger Download** to initiate the file stream.
+console.log("Starting client daemon...");
 
-View downloaded files at `http://your-server/downloads`.
+const pusher = new Pusher(process.env.REVERB_APP_KEY, {
+    wsHost: process.env.REVERB_HOST,
+    // if you use your own server, change the port and wssPort and forceTLS
+    wsPort: 443,
+    wssPort: 443,
+    forceTLS: true,
+    enabledTransports: ["ws", "wss"],
+    cluster: "mt1",
+});
 
-### Option B — API (curl)
+pusher.connection.bind("connected", () => {
+    console.log("WebSocket connection established.");
+});
 
-**Check connection status:**
-```bash
-curl http://your-server/api/check/rest02
-```
-```json
-{ "status": "online", "message": "Client rest02 is online" }
-```
+const channel = pusher.subscribe(`restaurant.${process.env.RESTAURANT_ID}`);
+console.log("Listening on channel: restaurant." + process.env.RESTAURANT_ID);
 
-**Trigger the download:**
-```bash
-curl http://your-server/api/trigger/rest02
-```
-```json
-{ "status": "success", "message": "Upload signal broadcasted to client: rest02" }
-```
+channel.bind("request.file", async (data) => {
+    console.log("Signal received via Pusher. Initializing data stream...");
 
-### Option C — Artisan CLI
+    try {
+        await axios.post(
+            `${process.env.CLOUD_API_URL}/ack/${process.env.RESTAURANT_ID}`,
+            {
+                event: "request.file",
+                receivedAt: new Date().toISOString(),
+            },
+        );
+        console.log("Acknowledgement sent to cloud server.");
+    } catch (ackError) {
+        console.warn(
+            "Ack failed:",
+            ackError.response?.data || ackError.message,
+        );
+    }
 
-```bash
-php artisan tinker
->>> broadcast(new \App\Events\RequestFileEvent('rest02'));
-```
+    await executeOutboundUpload();
+});
 
----
+async function executeOutboundUpload() {
+    const targetFilePath = path.join(os.homedir(), "file_to_download.txt");
 
-## API Reference
+    if (!fs.existsSync(targetFilePath)) {
+        console.log("Error: Target file missing at " + targetFilePath);
+        return;
+    }
 
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| `GET` | `/api/check/{clientId}` | Check if the client is online (WebSocket channel occupied) |
-| `GET` | `/api/trigger/{clientId}` | Check online status then broadcast `request.file` event |
-| `POST` | `/api/ack/{clientId}` | *(Called by client)* Acknowledge receipt of the signal |
-| `POST` | `/api/upload/{clientId}` | *(Called by client)* Stream the binary file to the server |
+    const fileStats = fs.statSync(targetFilePath);
+    const fileStream = fs.createReadStream(targetFilePath);
+    const uploadUrl = `${process.env.CLOUD_API_URL}/upload/${process.env.RESTAURANT_ID}`;
 
-### Response examples
+    console.log(`Starting upload: ${targetFilePath} (${fileStats.size} bytes)`);
 
-**Client online:**
-```json
-{ "status": "online", "message": "Client rest02 is online" }
-```
-
-**Client offline:**
-```json
-{ "status": "offline", "message": "Client rest02 is offline/unreachable" }
-```
-
-**WebSocket server unreachable:**
-```json
-{ "status": "error", "message": "WebSocket server is unreachable: cURL error 7..." }
-```
-
-**Download triggered successfully:**
-```json
-{ "status": "success", "message": "Upload signal broadcasted to client: rest02" }
-```
-
-**File received and saved:**
-```json
-{
-  "status": "success",
-  "message": "File successfully received and saved",
-  "path": "downloads/rest02_100mbfile.txt"
+    try {
+        const response = await axios({
+            method: "post",
+            url: uploadUrl,
+            data: fileStream,
+            headers: {
+                "Content-Type": "application/octet-stream",
+                "Content-Length": fileStats.size,
+            },
+            maxContentLength: Infinity,
+            maxBodyLength: Infinity,
+            timeout: 0,
+        });
+        console.log(
+            "File streamed successfully. Server response:",
+            response.status,
+            response.data,
+        );
+    } catch (error) {
+        console.error(
+            "Streaming failed:",
+            error.response?.data || error.message,
+        );
+    }
 }
 ```
 
 ---
 
-## Saved File Location
+## Triggering a Download
 
-Downloaded files are saved to:
+Once the client is online, trigger from the cloud:
+
+**Web UI:** https://cloud.nasrm.com
+
+- Enter the Restaurant ID → Click **Check Connection** → Click **Trigger Download**
+
+**or via curl:**
+
+```bash
+# Check if client is online
+curl https://cloud.nasrm.com/api/check/restaurant02
+
+# Trigger the file download
+curl https://cloud.nasrm.com/api/trigger/restaurant02
 ```
-storage/app/private/downloads/{clientId}_100mbfile.txt
+
+Downloaded files are listed at: https://cloud.nasrm.com/downloads
+
+---
+
+## Cloud Server Setup (self-hosting)
+
+> Skip this if you're using the live server at `cloud.nasrm.com`.
+
+```bash
+composer install
+cp .env.example .env
+php artisan key:generate
+```
+
+Set in `.env`:
+
+```env
+BROADCAST_CONNECTION=reverb
+REVERB_APP_ID=your_id
+REVERB_APP_KEY=your_key
+REVERB_APP_SECRET=your_secret
+REVERB_HOST=127.0.0.1
+REVERB_PORT=8080
+REVERB_SCHEME=http
+```
+
+Run:
+
+```bash
+php artisan serve            # HTTP server  → localhost:8000
+php artisan reverb:start     # WebSocket    → localhost:8080
 ```
 
 ---
 
-## Key Design Decisions
-
-### Why WebSockets for signalling, not polling?
-The cloud server cannot initiate an inbound TCP connection to a client behind NAT. A persistent **outbound** WebSocket from the client solves this without any firewall rule changes. The WebSocket is only used as a lightweight **signal channel** — the actual data travels over HTTP POST.
-
-### Why HTTP POST for the file, not WebSocket frames?
-Large binary transfers over WebSocket frames require careful chunking and buffering. HTTP POST with `Transfer-Encoding: chunked` is battle-tested for large payloads, plays well with reverse proxies (nginx/Caddy), and is simpler to implement memory-safely on both ends.
-
-### Why `ShouldBroadcastNow`?
-Using `ShouldBroadcastNow` instead of `ShouldBroadcast` means the event is dispatched synchronously — no queue worker is needed for the broadcast to fire. This simplifies the setup while keeping the `/api/trigger` response fast (it only broadcasts the signal, it does not wait for the upload).
-
-### Memory-safe streaming
-The server reads the upload with `php://input` and pipes it directly to disk via `Storage::writeStream()` — the file is never fully loaded into PHP memory, making it safe for files of any size.
+> Hi, I am Nasrul. I am still exploring WebSockets, as I have primarily worked with RESTful APIs most of the time. I am eager to learn, grow alongside experts like you all, and hope to have the opportunity to join your team! :')
