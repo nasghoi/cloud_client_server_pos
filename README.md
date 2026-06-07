@@ -26,7 +26,18 @@ Client (restaurant)                    Cloud Server
 - **`GET /api/check/{id}`** — Checks if the client is currently online.
 - **`GET /api/trigger/{id}`** — Sends a WebSocket signal to the client to start uploading.
 - **`POST /api/ack/{id}`** — Client confirms it received the signal and is ready.
-- **`POST /api/upload/{id}`** — Client streams the file to the server using HTTP POST (efficient).
+- **`POST /api/upload/{id}`** — Client uploads the file in multiple chunks to avoid timeouts and support large streams.
+
+## Chunked streaming
+
+The client does not send the entire file in one request. Instead, it streams the file in smaller chunks to `/api/upload/{id}`, with each chunk carrying metadata such as:
+
+- `X-Upload-Id`
+- `X-Chunk-Number`
+- `X-Total-Chunks`
+- `X-Chunk-Size`
+
+This allows the server to receive chunks one by one, store them temporarily, and merge them into the final file once all chunks arrive.
 
 ---
 
@@ -107,7 +118,6 @@ const pusher = new Pusher(process.env.REVERB_APP_KEY, {
     enabledTransports: ["ws", "wss"],
     cluster: "mt1",
 });
-
 pusher.connection.bind("connected", () => {
     console.log("WebSocket connection established.");
 });
@@ -134,8 +144,12 @@ channel.bind("request.file", async (data) => {
         );
     }
 
+
     await executeOutboundUpload();
 });
+
+const CHUNK_SIZE = 512 * 1024;
+const MAX_RETRIES = 3;
 
 async function executeOutboundUpload() {
     const targetFilePath = path.join(os.homedir(), "file_to_download.txt");
@@ -146,35 +160,74 @@ async function executeOutboundUpload() {
     }
 
     const fileStats = fs.statSync(targetFilePath);
-    const fileStream = fs.createReadStream(targetFilePath);
+    const uploadId = createUploadId();
+    const totalChunks = Math.ceil(fileStats.size / CHUNK_SIZE);
     const uploadUrl = `${process.env.CLOUD_API_URL}/upload/${process.env.RESTAURANT_ID}`;
 
-    console.log(`Starting upload: ${targetFilePath} (${fileStats.size} bytes)`);
+    console.log(
+        `Starting chunked upload for file: ${targetFilePath} (${fileStats.size} bytes)`,
+    );
+    console.log(`Using chunk size ${CHUNK_SIZE} bytes; total chunks: ${totalChunks}`);
 
-    try {
-        const response = await axios({
-            method: "post",
-            url: uploadUrl,
-            data: fileStream,
-            headers: {
-                "Content-Type": "application/octet-stream",
-                "Content-Length": fileStats.size,
-            },
-            maxContentLength: Infinity,
-            maxBodyLength: Infinity,
-            timeout: 0,
-        });
-        console.log(
-            "File streamed successfully. Server response:",
-            response.status,
-            response.data,
-        );
-    } catch (error) {
-        console.error(
-            "Streaming failed:",
-            error.response?.data || error.message,
-        );
+    for (let chunkNumber = 0; chunkNumber < totalChunks; chunkNumber++) {
+        const start = chunkNumber * CHUNK_SIZE;
+        const end = Math.min(start + CHUNK_SIZE, fileStats.size);
+        const chunkSize = end - start;
+        const headers = {
+            "Content-Type": "application/octet-stream",
+            "Content-Length": chunkSize,
+            "X-Upload-Id": uploadId,
+            "X-Chunk-Number": chunkNumber,
+            "X-Total-Chunks": totalChunks,
+            "X-Chunk-Size": chunkSize,
+        };
+
+        let attempt = 0;
+
+        while (attempt < MAX_RETRIES) {
+            let chunkStream = fs.createReadStream(targetFilePath, { start, end: end - 1 });
+
+            try {
+                console.log(`Uploading chunk ${chunkNumber + 1}/${totalChunks} (${chunkSize} bytes)`);
+
+                const response = await axios({
+                    method: "post",
+                    url: uploadUrl,
+                    data: chunkStream,
+                    headers,
+                    maxContentLength: Infinity,
+                    maxBodyLength: Infinity,
+                    timeout: 0,
+                });
+
+                console.log(
+                    `Chunk ${chunkNumber + 1}/${totalChunks} uploaded:`,
+                    response.status,
+                    response.data,
+                );
+                break;
+            } catch (error) {
+                attempt += 1;
+                const message = error.response?.data || error.message;
+                console.warn(`Chunk ${chunkNumber + 1} failed (attempt ${attempt}/${MAX_RETRIES}):`, message);
+
+                chunkStream.destroy();
+
+                if (attempt >= MAX_RETRIES) {
+                    console.error("Upload aborted after repeated failures.");
+                    return;
+                }
+
+                await new Promise((resolve) => setTimeout(resolve, 1000 * attempt));
+            }
+        }
     }
+
+    console.log("File upload finished successfully.");
+}
+
+function createUploadId() {
+    return `upload_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
 }
 ```
 
@@ -233,4 +286,4 @@ php artisan reverb:start     # WebSocket    → localhost:8080
 
 ---
 
-> Hi, I am Nasrul. I am still exploring WebSockets, as I have primarily worked with RESTful APIs most of the time. I am eager to learn, grow alongside experts like you all, and hope to have the opportunity to join your team! :')
+> Hi, I am Nasrul. I am still exploring WebSockets, as I have primarily worked with RESTful APIs most of the time. I am eager to learn, grow alongside experts like you all, and hope to have the opportunity to join your team! :)
