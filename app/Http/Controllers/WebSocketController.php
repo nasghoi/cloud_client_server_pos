@@ -221,7 +221,7 @@ class WebSocketController extends Controller
     {
         try {
             $disk->makeDirectory(dirname($finalFilename));
-            $finalPath = storage_path('app/local/' . $finalFilename);
+            $finalPath = $disk->path($finalFilename);
 
             $finalFile = fopen($finalPath, 'wb');
             if (!$finalFile) {
