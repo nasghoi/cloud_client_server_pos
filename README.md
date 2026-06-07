@@ -37,7 +37,13 @@ Client (restaurant)                    Cloud Server
 **1. Install dependencies**
 
 ```bash
-npm install
+npm install pusher-js axios dotenv
+```
+
+- In `package.json`, add:  
+
+```json
+"type": "module"
 ```
 
 **2. Configure `.env`**
