@@ -435,35 +435,6 @@
 
             <div class="sidebar-divider"></div>
 
-            <div>
-                <p class="sidebar-section-label">Upload File</p>
-                <div class="form-group">
-                    <label for="file-input">Select File</label>
-                    <input type="file" id="file-input" accept="*">
-                </div>
-                <div id="upload-progress-container" style="display: none; gap: 12px; flex-direction: column;">
-                    <div style="background: var(--gray-200); height: 20px; border-radius: 0; overflow: hidden;">
-                        <div id="upload-progress-bar" 
-                             style="background: var(--black); height: 100%; width: 0%; transition: width 0.3s;">
-                        </div>
-                    </div>
-                    <div style="font-size: 11px; color: var(--gray-600);">
-                        <p id="upload-progress-text" style="margin-bottom: 4px;">0%</p>
-                        <p id="upload-status-message" style="margin: 0; line-height: 1.4;">Ready...</p>
-                    </div>
-                    <div class="btn-group">
-                        <button class="btn btn-secondary" id="upload-cancel-btn" onclick="cancelUpload()">
-                            <svg class="icon" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5">
-                                <path d="M4 4l8 8M12 4l-8 8" />
-                            </svg>
-                            <span class="btn-text">Cancel Upload</span>
-                        </button>
-                    </div>
-                </div>
-            </div>
-
-            <div class="sidebar-divider"></div>
-
             <!-- API Reference -->
             <div class="api-ref">
                 <p class="sidebar-section-label">API Reference</p>
@@ -479,18 +450,7 @@
                     <span class="method-tag">POST</span>
                     <span class="api-path">/api/ack/{clientId}</span>
                 </div>
-                <div class="api-ref-item">
-                    <span class="method-tag">POST</span>
-                    <span class="api-path">/api/upload/{clientId}</span>
-                </div>
-                <div class="api-ref-item">
-                    <span class="method-tag">GET</span>
-                    <span class="api-path">/api/upload-progress/{uploadId}</span>
-                </div>
-                <div class="api-ref-item">
-                    <span class="method-tag">POST</span>
-                    <span class="api-path">/api/upload-abort/{uploadId}</span>
-                </div>
+
             </div>
         </aside>
 
@@ -517,65 +477,7 @@
         </section>
     </main>
 
-    <script src="{{ asset('js/chunk-uploader.js') }}"></script>
     <script>
-        let currentUploader = null;
-
-        // File upload handler
-        document.getElementById('file-input').addEventListener('change', async (e) => {
-            const file = e.target.files[0];
-            if (!file) return;
-
-            const clientId = document.getElementById('restaurant-id').value.trim();
-            if (!clientId) {
-                showError('Please enter a Restaurant ID before uploading.');
-                return;
-            }
-
-            // Create uploader instance
-            currentUploader = new ChunkedFileUploader({
-                chunkSize: 5 * 1024 * 1024,
-                maxRetries: 3,
-                timeout: 30000,
-                baseUrl: '/api'
-            });
-
-            const progressContainer = document.getElementById('upload-progress-container');
-            progressContainer.style.display = 'flex';
-
-            try {
-                const result = await currentUploader.upload(file, clientId, (progress) => {
-                    document.getElementById('upload-progress-bar').style.width = progress.progress + '%';
-                    document.getElementById('upload-progress-text').textContent = `${progress.progress}%`;
-                    document.getElementById('upload-status-message').textContent = 
-                        `Chunk ${progress.chunkNumber + 1}/${progress.totalChunks} - ${progress.message}`;
-                });
-
-                document.getElementById('upload-status-message').textContent = '✅ Upload completed successfully!';
-                document.getElementById('file-input').value = '';
-                
-                setTimeout(() => {
-                    progressContainer.style.display = 'none';
-                }, 2000);
-
-            } catch (error) {
-                document.getElementById('upload-status-message').textContent = `❌ Upload failed: ${error.message}`;
-                console.error('Upload failed:', error);
-            }
-        });
-
-        function cancelUpload() {
-            if (currentUploader) {
-                currentUploader.cancel().then(() => {
-                    document.getElementById('upload-progress-container').style.display = 'none';
-                    document.getElementById('file-input').value = '';
-                    console.log('Upload cancelled');
-                }).catch(err => {
-                    console.error('Error cancelling upload:', err);
-                });
-            }
-        }
-
         async function handleAction(type) {
             const clientId = document.getElementById('restaurant-id').value.trim();
 
