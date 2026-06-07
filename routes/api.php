@@ -1,59 +1,11 @@
 <?php
 
-
-use App\Events\RequestFileEvent;
-use Illuminate\Http\Request;
+use App\Http\Controllers\WebSocketController;
 use Illuminate\Support\Facades\Route;
-use Illuminate\Support\Facades\Storage;
 
-// 1. Trigger the action via WebSocket Broadcast
-Route::get('/trigger/{clientId}', function ($clientId) {
-    // Broadcast the event across the Reverb control plane
-    broadcast(new RequestFileEvent($clientId));
-
-    return response()->json([
-        'status' => 'success',
-        'message' => 'Upload signal broadcasted to client: ' . $clientId
-    ]);
-});
-
-// 1a. Acknowledge the event was received by the client
-Route::post('/ack/{clientId}', function (Request $request, $clientId) {
-    return response()->json([
-        'status' => 'success',
-        'message' => 'Client acknowledgement received',
-        'clientId' => $clientId,
-        'payload' => $request->all()
-    ]);
-});
-
-// 2. Handle the incoming heavy data stream via HTTP POST
-Route::post('/upload/{clientId}', function (Request $request, $clientId) {
-    $filename = "downloads/{$clientId}_100mbfile.txt";
-    $disk = Storage::disk('local');
-    $disk->makeDirectory(dirname($filename));
-
-    $inputStream = fopen('php://input', 'rb');
-    if (!$inputStream) {
-        return response()->json([
-            'status' => 'error',
-            'message' => 'Cannot read incoming file stream'
-        ], 400);
-    }
-
-    $success = $disk->writeStream($filename, $inputStream);
-    fclose($inputStream);
-
-    if ($success === false) {
-        return response()->json([
-            'status' => 'error',
-            'message' => 'Failed to save uploaded file'
-        ], 500);
-    }
-
-    return response()->json([
-        'status' => 'success',
-        'message' => 'File successfully received and saved',
-        'path' => $filename
-    ]);
+Route::controller(WebSocketController::class)->group(function () {
+    Route::get('/check/{clientId}', 'checkConnection');
+    Route::get('/trigger/{clientId}', 'triggerUpload');
+    Route::post('/ack/{clientId}', 'handleAcknowledgement');
+    Route::post('/upload/{clientId}', 'handleUpload');
 });
