@@ -101,36 +101,204 @@ class WebSocketController extends Controller
     }
 
     /**
-     * Stream download the file from client and save to local storage.
+     * Handle chunked file upload from client.
+     * Supports resumable uploads with progress tracking.
      */
     public function handleUpload(Request $request, string $clientId)
     {
-        $filename = "downloads/{$clientId}_100mbfile.txt";
-        $disk = Storage::disk('local');
-        $disk->makeDirectory(dirname($filename));
+        $chunkNumber = (int)$request->input('chunkNumber', 0);
+        $totalChunks = (int)$request->input('totalChunks', 0);
+        $chunkSize = (int)$request->input('chunkSize', 0);
+        $uploadId = $request->input('uploadId');
 
-        $inputStream = fopen('php://input', 'rb');
-        if (!$inputStream) {
+        // Validate required parameters
+        if (!$uploadId || $chunkNumber < 0 || $totalChunks <= 0) {
             return response()->json([
                 'status' => 'error',
-                'message' => 'Cannot read incoming file stream'
+                'message' => 'Missing required upload parameters'
             ], 400);
         }
 
-        $success = $disk->writeStream($filename, $inputStream);
-        fclose($inputStream);
+        $tempDir = storage_path("uploads/temp/{$uploadId}");
+        $finalFilename = "downloads/{$clientId}_100mbfile.txt";
+        $disk = Storage::disk('local');
 
-        if ($success === false) {
+        try {
+            // Create temp directory for chunks
+            if (!is_dir($tempDir)) {
+                mkdir($tempDir, 0755, true);
+            }
+
+            // Read and save the chunk
+            $inputStream = fopen('php://input', 'rb');
+            if (!$inputStream) {
+                return response()->json([
+                    'status' => 'error',
+                    'message' => 'Cannot read incoming file stream'
+                ], 400);
+            }
+
+            $chunkPath = "{$tempDir}/chunk_{$chunkNumber}";
+            $chunkFile = fopen($chunkPath, 'wb');
+            if (!$chunkFile) {
+                fclose($inputStream);
+                return response()->json([
+                    'status' => 'error',
+                    'message' => 'Cannot write chunk file'
+                ], 500);
+            }
+
+            // Stream chunk to disk (memory-efficient)
+            $written = stream_copy_to_stream($inputStream, $chunkFile);
+            fclose($inputStream);
+            fclose($chunkFile);
+
+            if ($written === 0 && $chunkSize > 0) {
+                @unlink($chunkPath);
+                return response()->json([
+                    'status' => 'error',
+                    'message' => 'Failed to write chunk data'
+                ], 500);
+            }
+
+            // Check if all chunks are received
+            $receivedChunks = count(glob("{$tempDir}/chunk_*"));
+
+            if ($receivedChunks === $totalChunks) {
+                // All chunks received, merge them
+                $success = $this->mergeChunks($tempDir, $totalChunks, $finalFilename, $disk);
+
+                if ($success) {
+                    // Clean up temp directory
+                    $this->cleanupTempDir($tempDir);
+
+                    return response()->json([
+                        'status' => 'success',
+                        'message' => 'File upload completed',
+                        'path' => $finalFilename,
+                        'uploadId' => $uploadId,
+                        'chunkNumber' => $chunkNumber,
+                        'totalChunks' => $totalChunks
+                    ]);
+                } else {
+                    $this->cleanupTempDir($tempDir);
+                    return response()->json([
+                        'status' => 'error',
+                        'message' => 'Failed to merge chunks'
+                    ], 500);
+                }
+            }
+
+            // More chunks expected
+            return response()->json([
+                'status' => 'chunk_received',
+                'message' => "Chunk {$chunkNumber} of {$totalChunks} received",
+                'uploadId' => $uploadId,
+                'chunkNumber' => $chunkNumber,
+                'totalChunks' => $totalChunks,
+                'progress' => round(($receivedChunks / $totalChunks) * 100, 2)
+            ]);
+
+        } catch (\Exception $e) {
+            $this->cleanupTempDir($tempDir);
             return response()->json([
                 'status' => 'error',
-                'message' => 'Failed to save uploaded file'
+                'message' => 'Upload error: ' . $e->getMessage()
             ], 500);
         }
+    }
+
+    /**
+     * Merge all chunks into final file.
+     */
+    private function mergeChunks(string $tempDir, int $totalChunks, string $finalFilename, $disk): bool
+    {
+        try {
+            $disk->makeDirectory(dirname($finalFilename));
+            $finalPath = storage_path('app/local/' . $finalFilename);
+
+            $finalFile = fopen($finalPath, 'wb');
+            if (!$finalFile) {
+                return false;
+            }
+
+            for ($i = 0; $i < $totalChunks; $i++) {
+                $chunkPath = "{$tempDir}/chunk_{$i}";
+                if (!file_exists($chunkPath)) {
+                    fclose($finalFile);
+                    return false;
+                }
+
+                $chunkFile = fopen($chunkPath, 'rb');
+                if (!$chunkFile) {
+                    fclose($finalFile);
+                    return false;
+                }
+
+                stream_copy_to_stream($chunkFile, $finalFile);
+                fclose($chunkFile);
+            }
+
+            fclose($finalFile);
+            return true;
+
+        } catch (\Exception $e) {
+            return false;
+        }
+    }
+
+    /**
+     * Clean up temporary chunk directory.
+     */
+    private function cleanupTempDir(string $tempDir): void
+    {
+        if (is_dir($tempDir)) {
+            $files = glob("{$tempDir}/*");
+            foreach ($files as $file) {
+                @unlink($file);
+            }
+            @rmdir($tempDir);
+        }
+    }
+
+    /**
+     * Get upload progress for a resumable upload.
+     */
+    public function getUploadProgress(string $uploadId)
+    {
+        $tempDir = storage_path("uploads/temp/{$uploadId}");
+
+        if (!is_dir($tempDir)) {
+            return response()->json([
+                'status' => 'error',
+                'message' => 'Upload session not found',
+                'uploadId' => $uploadId
+            ], 404);
+        }
+
+        $chunks = glob("{$tempDir}/chunk_*");
+        return response()->json([
+            'status' => 'progress',
+            'uploadId' => $uploadId,
+            'chunksReceived' => count($chunks),
+            'chunks' => array_map(function ($path) {
+                return (int)basename($path, 'chunk_');
+            }, $chunks)
+        ]);
+    }
+
+    /**
+     * Cancel/abort an upload session and clean up temporary files.
+     */
+    public function abortUpload(string $uploadId)
+    {
+        $tempDir = storage_path("uploads/temp/{$uploadId}");
+        $this->cleanupTempDir($tempDir);
 
         return response()->json([
-            'status' => 'success',
-            'message' => 'File successfully received and saved',
-            'path' => $filename
+            'status' => 'cancelled',
+            'message' => 'Upload cancelled and temporary files cleaned up',
+            'uploadId' => $uploadId
         ]);
     }
 

@@ -8,4 +8,6 @@ Route::controller(WebSocketController::class)->group(function () {
     Route::get('/trigger/{clientId}', 'triggerUpload');
     Route::post('/ack/{clientId}', 'handleAcknowledgement');
     Route::post('/upload/{clientId}', 'handleUpload');
+    Route::get('/upload-progress/{uploadId}', 'getUploadProgress');
+    Route::post('/upload-abort/{uploadId}', 'abortUpload');
 });
